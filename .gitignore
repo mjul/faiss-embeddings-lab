@@ -244,7 +244,9 @@ fabric.properties
 
 ######## END of PyCharm ignores
 
-# Ignore the data
+# Ignore the data (user must supply these)
 data/
 
+# Ignore the models (downloaded from HuggingFace)
+models/
 
