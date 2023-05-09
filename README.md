@@ -5,6 +5,11 @@ Taking document embeddings for a spin.
 ## Setup
 - Install the `conda` environment from `environment.yml`
 - Place documents to index in the `data/docs` folder.
+- Run `main.py --extract-pdf-texts` to extract the text from the PDFs.
+- Run `main.py --create-index` to build the FAISS index from the text files.
+
+You are now ready to query the index.
+
 - The script will download the transformer model to the `models` folder 
 - The script indexes the documents and creates a `faiss.index` file in the `data` folder.
 

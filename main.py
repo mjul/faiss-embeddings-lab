@@ -1,28 +1,47 @@
+import argparse
 import datetime
+import json
 import pathlib
 import PyPDF2
+import PyPDF2.errors
 import faiss
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
 import torch
 
-# Define the device to use
-# For now, we will use the CPU
-device = torch.device("cpu")  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# Use the device to move tensors to the GPU or CPU
-
+# ----------------------------------------------------------------
+# Configure external files and directories
+# ----------------------------------------------------------------
 
 ROOT_DIR = pathlib.Path(__file__).parent
-DATA_DIR = ROOT_DIR / "data"
-DOCUMENT_DIR = DATA_DIR / "docs"
-INDEX_FILE = DATA_DIR / "index.faiss"
 
+# This folder is for the input data
+DATA_DIR = ROOT_DIR / "data"
+# This is the main document directory with the PDFs
+DOCUMENT_DIR = DATA_DIR / "docs"
+# This is a tmp directory with the text from the PDFs.
+# It can be rebuilt from the PDFs.
+TEXT_DIR = DATA_DIR / "texts"
+
+# The models directory is where we store the models, pre-trained and our index
+# It can be rebuilt from the text files.
 MODEL_DIR = ROOT_DIR / "models"
+
+INDEX_FILE = MODEL_DIR / "index.faiss"
+INDEX_METADATA_FILE = MODEL_DIR / "index.metadata.json"
+
+# ----------------------------------------------------------------
+# Configure the tokenizer and model
+# ----------------------------------------------------------------
+
+# Define the device to use, using a CUDA GPU if available.
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the pre-trained tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', cache_dir=MODEL_DIR)
-model = AutoModel.from_pretrained('bert-base-uncased')
+model = AutoModel.from_pretrained('bert-base-uncased').to(device)
 
+# ----------------------------------------------------------------
 
 def extract_text_from_pdf(file):
     """
@@ -47,6 +66,34 @@ def extract_text_from_pdf(file):
     return text
 
 
+def find_pdfs():
+    """Return a list of all PDF files in the DOCUMENT_DIR."""
+    return [p for p in DOCUMENT_DIR.iterdir()
+            if p.suffix == ".pdf" and p.is_file()]
+
+
+def extract_pdf_texts():
+    """Extract the text from the PDF files in the DOCUMENT_DIR and save them in the TEXT_DIR."""
+    for f in find_pdfs():
+        pdf_path = f.relative_to(DOCUMENT_DIR)
+        text_file = TEXT_DIR / pdf_path.with_suffix(".txt")
+        text_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if text_file.exists():
+            print(f"Text already extracted from: {f}.")
+        else:
+            print(f"Extracting text from {f}...")
+            text = extract_text_from_pdf(f)
+            text_file.write_text(text, encoding="utf-8")
+
+# ----------------------------------------------------------------
+
+def find_texts():
+    """Return a list of all text files in the TEXT_DIR."""
+    return [p for p in TEXT_DIR.iterdir()
+            if p.suffix == ".txt" and p.is_file()]
+
+
 # Define a function to compute embeddings for a list of texts
 def get_embeddings(text_list):
     encoded_input = tokenizer(
@@ -58,59 +105,72 @@ def get_embeddings(text_list):
     return model_output.last_hidden_state[:, 0, :].detach().cpu().numpy()
 
 
-def parse_pdf_files(pdf_files):
-    print("Parsing PDF files...")
-    file_texts = []
-    for i, file in enumerate(pdf_files):
-        if i % 25 == 0:
-            print(f"  Parsing file {i} of {len(pdf_files)}: {file}")
-        file_texts.append(extract_text_from_pdf(file))
-    return file_texts
+def create_index():
+    """Create the FAISS index from the text files."""
+    text_files = find_texts()
 
-
-def create_index(pdf_files):
-    """Parse the PDF files and create the FAISS index."""
-    file_texts = parse_pdf_files(pdf_files)
+    print("Loading text files...")
+    file_texts = [f.read_text(encoding="utf-8") for f in text_files]
 
     print("Computing embeddings...")
     embeddings = get_embeddings(file_texts)
+
     print("Creating index...")
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(np.ascontiguousarray(embeddings))
+
     print("Saving index...")
     faiss.write_index(index, str(INDEX_FILE))
+    print("Saving index metadata...")
+    metadata = {
+        "created": datetime.datetime.now().isoformat(),
+        "files": [str(f.relative_to(TEXT_DIR)) for f in text_files],
+    }
+    INDEX_METADATA_FILE.write_text(json.dumps(metadata, indent=4), encoding="utf-8")
 
-
-def conditionally_create_or_update_index(pdf_files):
-    """Create or update the index if any of the files are newer than the index."""
-    newest_pdf = max(pdf_files, key=lambda p: p.stat().st_mtime)
-    newest_pdf_timestamp = newest_pdf.stat().st_mtime
-    # Rebuild index if necessary
-    is_index_up_to_date = INDEX_FILE.exists() and INDEX_FILE.stat().st_mtime > newest_pdf_timestamp
-    if is_index_up_to_date:
-        print("Index is up-to-date.")
-    else:
-        create_index(pdf_files)
-
+# ----------------------------------------------------------------
 
 def main():
-    print("Searching for PDF files...")
-    pdf_files = [p for p in DOCUMENT_DIR.iterdir()
-                 if p.suffix == ".pdf" and p.is_file()]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--extract-pdf-texts", help="Extract the text from the PDF files.", action="store_true")
+    parser.add_argument("--create-index", help="Create the index from the text files.", action="store_true")
+    args = parser.parse_args()
 
-    pdf_files = pdf_files[:100] # TODO: remove this, for testing only
+    if args.extract_pdf_texts:
+        extract_pdf_texts()
 
-    conditionally_create_or_update_index(pdf_files)
+    if args.create_index:
+        create_index()
 
     print("Loading index...")
     index = faiss.read_index(str(INDEX_FILE))
+    index_metadata = json.loads(INDEX_METADATA_FILE.read_text(encoding="utf-8"))
 
-    print("Searching index...")
+    print("Searching index for a vector...")
     # Retrieve a vector by ID from the FAISS index
     required_vector_id = 1
     vector = np.array([index.reconstruct(i)[required_vector_id] for i in range(index.ntotal)])
     print(vector)
-    # D, I = index.search(xq, 5)
+
+    print("Searching for matching embeddings...")
+    qs = [
+        "prolog and logic programming historical overview",
+        "artificial intelligence with gpt",
+        "object-oriented terminology and language design",
+        "learning to summarize from human feedback",
+        "eigenvalues, eigenvectors, and invariant subspaces in linear algebra",
+        "financial networks and statistical physics",
+        "lexers and lexer generators, dfas and context-free grammars"
+    ]
+
+    for q in qs:
+        xq = get_embeddings([q])
+        print("Searching for: ", q)
+        D, I = index.search(xq, 5)
+        print("Distances and indices: D, I", D, I)
+        for i in I[0]:
+            print(i, index_metadata['files'][i])
+        print()
 
     print("Done.")
 
