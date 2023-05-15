@@ -17,3 +17,7 @@ You are now ready to query the index.
 It appears that the Windows version of `faiss-cpu` on the `pytorch` channel is not
 working due to a missing `swigfaiss` DLL. However, the `faiss-cpu` package on the `conda-forge` 
 channel works.
+
+# Notebooks
+There are a number of Jupyter notebooks in the `notebooks` folder with 
+experiments. See [notebooks/README.md](notebooks/README.md) for details.
